@@ -13,6 +13,9 @@ BeginPackage["Wolfram`Class`"];
 
 InheritDefinitions;
 Class;
+PropertyMethod;
+StaticMethod;
+ClassMethod;
 
 
 Begin["`Private`"];
@@ -68,28 +71,30 @@ ParallelDelayedBlock[a_, b_, args___] := Enclose @ ParallelEvaluate[
 ClearAll[InheritDefinitions, $Children, $Parent]
 SetAttributes[{InheritDefinitions, $Children, $Parent, RootParent, AllChildren, ParentTest, ParentType}, HoldAll]
 
-$UpValueBlock = True;
+$UpValueHack = False;
 
 $Children[_] := Hold[]
 $Parent[_] := None
 
 AllChildren[x_] := Flatten[Replace[$Children[x], y_ :> RuleCondition[Prepend[AllChildren[y], y]], {1}], 1, Hold]
-RootParent[x_] := With[{parent = $Parent[x]}, If[parent === None || Hold[x] === parent, Hold[x], RootParent @@ parent]]
+RootParent[x_] := RootParent[x] = With[{parent = $Parent[x]}, If[parent === None || Hold[x] === parent, Hold[x], RootParent @@ parent]]
 ParentTest[x_][y_] := With[{parent = $Parent[y]}, parent =!= None && (parent === Hold[x] || Function[Null, ParentTest[x][Unevaluated[#]], HoldAll] @@ parent)]
 ParentType[x_] := _ ? (ParentTest[x])
 
 InheritDefinitions[a_ ? Developer`SymbolQ, b_ ? Developer`SymbolQ] := (
 
 	(* Track children and parents *)
-	$Children[a] = Union[$Children[a], Hold[b]];
-	$Parent[b] = Hold[a];
+	If[	$UpValueHack,
+		$Children[a] = Union[$Children[a], Hold[b]];
+		$Parent[b] = Hold[a]
+	];
 
 	(* Inherit DownValues and SubValues *)
 	b[args___] := DelayedBlock[a, b, a[args]];
 
 	(* Inherit FormatValues. Needs TraceInternal and one more step to go deeper *)
 	MakeBoxes[b, form___] ^:= ParallelDelayedBlock[a, b, MakeBoxes[a, form], 2, TraceInternal -> True, TraceDepth -> Infinity];
-	
+
 	(* NValues is also tricky as it evaluates its arguments *)
 	N[b, args___] :=
 		DelayedBlock[a, b, N[a, args], Evaluate[3 + Length[{args}]], TraceInternal -> True, TraceDepth -> Infinity];
@@ -104,48 +109,57 @@ InheritDefinitions[a_ ? Developer`SymbolQ, b_ ? Developer`SymbolQ] := (
 		HoldPattern[Options[b, args___]] :> Options[a, args]
 	};
 
-	(* Inherit UpValues with pattern variable substitution *)
-	expr : head_[left___, b, right___] /; $UpValueBlock ^:= Block[{$UpValueBlock = False, ret, cond},
-		{ret, cond} = Block[{def, rule, upvalues,
-			root = RootParent[b],
-			type
-		},
-			If[ root === None, {Null, False},
-				type = Alternatives @@@ HoldPattern[Evaluate[DeleteDuplicates @ Join[root, AllChildren @@ root]]];
-				upvalues = Join @@ UpValues @@@ Cases[FixedPointList[Apply[$Parent], Hold[b]], _Hold];
-				(*If[head === f, EchoFunction[InputForm]@{type, upvalues}];*)
-				upvalues = MapAt[
-					Replace[
-						#,
-						{
-							Verbatim[Pattern][p_, c : Evaluate[type]] :> RuleCondition[Pattern @@ Hold[p, ParentType[c]]],
-							c : Evaluate[type] :> _ ? (ParentTest[c])
+	(* Inherit UpValues with pattern variable substitution (disabled by default) *)
+	If[ $UpValueHack,
+		expr : _[___, b, ___] /; $UpValueHack ^:= Block[{$UpValueHack = False, ret, cond},
+			{ret, cond} = Block[{def, rule, upvalues,
+				root = RootParent[b],
+				type
+			},
+				If[ root === None, {Null, False},
+					type = Alternatives @@@ HoldPattern[Evaluate[DeleteDuplicates @ Join[root, AllChildren @@ root]]];
+					upvalues = Join @@ UpValues @@@ Cases[FixedPointList[Apply[$Parent], Hold[b]], _Hold];
+					(*If[head === f, EchoFunction[InputForm]@{type, upvalues}];*)
+					upvalues = MapAt[
+						Replace[
+							#,
+							{
+								Verbatim[Pattern][p_, c : Evaluate[type]] :> RuleCondition[Pattern @@ Hold[p, ParentType[c]]],
+								c : Evaluate[type] :> _ ? (ParentTest[c])
+							},
+							{2}
+						] &,
+						upvalues,
+						{All, 1}
+					];
+					def = SelectFirst[upvalues, MatchQ[Unevaluated[expr], #[[1]]] &];
+
+					If[ MissingQ[def],
+						{Null, False},
+						Replace[def, (lhs_ :> rhs_) :> With[{
+							newRhs = Unevaluated[Unevaluated[rhs]] /. HoldPattern[a] :> b
 						},
-						{2}
-					] &,
-					upvalues,
-					{All, 1}
-				];
-				def = SelectFirst[upvalues, MatchQ[Unevaluated[expr], #[[1]]] &];
-				
-				If[ MissingQ[def],
-					{Null, False},
-					Replace[def, (lhs_ :> rhs_) :> With[{
-						newRhs = Unevaluated[Unevaluated[rhs]] /. HoldPattern[a] :> b
-					},
-						rule = RuleDelayed @@ Unevaluated @ {
-							lhs,
-							Block[{$UpValueBlock = True}, DelayedBlock[a, b, newRhs]]};
-						(*If[head === g, Echo[InputForm[{def, rule, Hold[newRhs]}]]];*)
-						{Replace[Unevaluated[expr], rule], True}
-					]]
+							rule = RuleDelayed @@ Unevaluated @ {
+								lhs,
+								Block[{$UpValueHack = True}, DelayedBlock[a, b, newRhs]]};
+							(*If[head === g, Echo[InputForm[{def, rule, Hold[newRhs]}]]];*)
+							{Replace[Unevaluated[expr], rule], True}
+						]]
+					]
 				]
-			]
-		];
-		
-		ret /; cond
+			];
+
+			ret /; cond
+		],
+
+		(* No pattern variable substitution *)
+		head_[left___, b, right___] /;
+			MatchQ[
+				Unevaluated[head[left, a, right]],
+				Alternatives @@ Keys @ UpValues[a]
+			] ^:= DelayedBlock[a, b, head[left, a, right]]
 	];
-	
+
 	(* Inherit OwnValues *)
 	b /;
 		MatchQ[
@@ -169,13 +183,7 @@ With[{
     }]
 },
     SetAttributes[ref, {Temporary}];
-
 	InheritDefinitions[self, ref];
-
-	(* default class constructor is a Class constructor, absence of defined $Init would result in calling it twice, with and without initArgs *)
-	If[ cmd === "$New",
-		ref["$Init"[obj_, args___]] := Class["$Init"[obj, ref, args]]
-	];
 
     (* every instance is also a class, initialize as class first *)
     Confirm @ Class[If[cmd === "$New", Unevaluated["$Init"[ref, super]], Unevaluated["$Init"[ref, super, initArgs]]]];
@@ -190,14 +198,16 @@ With[{
 
     ref["$Properties"] := self["$Properties"];
     ref["$ClassMethods"] := self["$ClassMethods"];
-    
+	ref["$StaticMethods"] := self["$StaticMethods"];
+
     If[ cmd === "$New",
 
         (* methods *)
         ref[method_String[args : PatternSequence[arg_, ___] | ___]] /; ClassMethodQ[method, self] && Unevaluated[arg] =!= ref && Unevaluated[arg] =!= ref["$Parent"] :=
             If[self["$Parent"] === Class, self[Unevaluated[method[self, args]]], self["$Parent"][Unevaluated[method[self, args]]]];
-        If[ self =!= Class,
-            ref[method_String[args___]] := self[method[ref, args]]
+
+		If[ self =!= Class,
+            ref[method_String[args___] /; ! StaticMethodQ[method, self]] := self[method[ref, args]]
         ];
 
         (* properties *)
@@ -221,7 +231,10 @@ With[{
 				Missing[method]
 			];
 			ref[prop_String] := Missing[prop]
-        ]
+        ];
+
+		(* default class constructor is a Class constructor, absence of defined $Init would result in calling it twice, with and without initArgs *)
+		HoldPattern[ref["$Init"[obj_, args___]]] := Class["$Init"[obj, ref, args]];
         ,
 
 		(* else Extend *)
@@ -233,18 +246,11 @@ With[{
 
     If[ self["$Parent"] === Class,
         MakeBoxes[ref, form___] ^:= self["$Format"[ref, form]],
-        MakeBoxes[ref, form___] ^:= self["$Parent"]["$Format"[ref, form]]
+        MakeBoxes[ref, form___] ^:= self["$Class"]["$Format"[ref, form]]
     ];
 
     ref
 ]]
-
-
-ClassTest[self_][x_] := With[{super = x["$Parent"]}, super =!= Unevaluated[x["$Parent"]] && (MatchQ[super, self] || super =!= Class && ClassTest[self][super])]
-ClassQ[x_] := Unevaluated[x] === Class || Developer`SymbolQ[Unevaluated[x]] && ClassQ[x["$Parent"]]
-ClassQ[___] := False
-ClassMethodQ[method_, self_] := ListQ[self["$ClassMethods"]] && MemberQ[self["$ClassMethods"], method]
-
 
 Class["$Init"[self_, class_, initValues___]] := Block[{
     initRules = Replace[{initValues}, {lhs : Except[_Rule | _RuleDelayed] :> lhs -> None}, {1}],
@@ -279,7 +285,7 @@ Class["$Init"[self_, class_, initValues___]] := Block[{
         initRules
     ];
     self["$InitDefinitions"] = definitions;
-    
+
     Normal[self] ^:= self["$Normal"[]];
     N[self, args___] := self["$N"[args]];
 
@@ -290,12 +296,24 @@ Class["$Init"[self_, class_, initValues___]] := Block[{
 ]
 
 
-Class["$Init"[Class, Class, "$Icon", "$Parent" -> Class, "$Properties" -> {}, "$ClassMethods" -> {}]];
+Class["$Init"[Class, Class, "$Icon", "$Parent" -> Class, "$Properties" -> {}, "$ClassMethods" -> {}, "$StaticMethods" -> {}]];
 
 Class[class_, values___] := (Class[Unevaluated["$New"[class, values]], Unevaluated[class]])
 
 Class[class_ -> parent_ ? Developer`SymbolQ, values___] :=
     HoldPattern[parent[class]] = parent["$Extend"[values], Unevaluated[class]]
+
+
+ClassTest[self_][x_] := With[{super = x["$Parent"]}, super =!= Unevaluated[x["$Parent"]] && (MatchQ[super, self] || super =!= Class && ClassTest[self][super])]
+ClassQ[x_] := Unevaluated[x] === Class || Developer`SymbolQ[Unevaluated[x]] && ClassQ[x["$Parent"]]
+ClassQ[___] := False
+ClassMethodQ[method_, self_] := ListQ[self["$ClassMethods"]] && MemberQ[self["$ClassMethods"], method]
+StaticMethodQ[method_, self_] := ListQ[self["$StaticMethods"]] && MemberQ[self["$StaticMethods"], method]
+
+SetAttributes[{PropertyMethod, StaticMethod, ClassMethod}, HoldFirst]
+PropertyMethod[set : _[class_[method_[___]], _]] := (class["$Properties"] //= Append[method]; set)
+StaticMethod[set : _[class_[method_[___]], _]] := (class["$StaticMethods"] //= Append[method]; set)
+ClassMethod[set : _[class_[method_[___]], _]] := (class["$ClassMethods"] //= Append[method]; set)
 
 
 (* ::Section::Closed:: *)
