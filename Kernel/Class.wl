@@ -182,8 +182,8 @@ With[{
         Automatic | Except[_ ? Developer`SymbolQ] :> Unique[StringDelete[ToString[Unevaluated[super]], Except[WordCharacter | "$"]] <> "$"]
     }]
 },
-    SetAttributes[ref, {Temporary}];
 	InheritDefinitions[self, ref];
+	SetAttributes[ref, {Temporary}];
 
     (* every instance is also a class, initialize as class first *)
     Confirm @ Class[If[cmd === "$New", Unevaluated["$Init"[ref, super]], Unevaluated["$Init"[ref, super, initArgs]]]];
@@ -203,15 +203,15 @@ With[{
     If[ cmd === "$New",
 
         (* methods *)
-        ref[method_String[args : PatternSequence[arg_, ___] | ___]] /; ClassMethodQ[method, self] && Unevaluated[arg] =!= ref && Unevaluated[arg] =!= ref["$Parent"] :=
-            If[self["$Parent"] === Class, self[Unevaluated[method[self, args]]], self["$Parent"][Unevaluated[method[self, args]]]];
+        ref[method_String[args : PatternSequence[arg_, ___] | ___], opts___] /; ClassMethodQ[method, self] && Unevaluated[arg] =!= ref && Unevaluated[arg] =!= ref["$Parent"] :=
+            If[self["$Parent"] === Class, self[Unevaluated[method[self, args]], opts], self["$Parent"][Unevaluated[method[self, args]], opts]];
 
 		If[ self =!= Class,
-            ref[method_String[args___] /; ! StaticMethodQ[method, self]] := self[method[ref, args]]
+            ref[method_String[args___] /; ! StaticMethodQ[method, self], opts___] := self[method[ref, args], opts]
         ];
 
         (* properties *)
-	    ref[prop_String] /; ListQ[self["$Properties"]] && MemberQ[self["$Properties"], prop] := self[prop[ref]];
+	    ref[prop_String, opts___] /; ListQ[self["$Properties"]] && MemberQ[self["$Properties"], prop] := self[prop[ref], opts];
 
         If[ self =!= Class,
 			ref[def : _String | _String[___]] := self[def]
@@ -222,11 +222,11 @@ With[{
 
 		(* missing method fallback *)
         If[ self === Class,
-            ref[method_String[args___]] := Which[
+            ref[method_String[args___], opts___] := Which[
 				method === "$Init",
 				ref,
 				ClassMethodQ[method, ref] && (Length[Unevaluated[{args}]] == 0 || MatchQ[Extract[Unevaluated[{args}], 1, Unevaluated], ref]),
-				ref[method[ref, args]],
+				ref[method[ref, args], opts],
 				True,
 				Missing[method]
 			];
@@ -238,9 +238,9 @@ With[{
         ,
 
 		(* else Extend *)
-        ref[method_String[ref, args___]] /; ClassMethodQ[method, self] := self[Unevaluated[method[ref, args]]];
-        ref[method_String[args : PatternSequence[arg_, ___] | ___]] /; ClassMethodQ[method, self] && Unevaluated[arg] =!= ref && Unevaluated[arg] =!= self :=
-            ref[Unevaluated[method[ref, args]]];
+        ref[method_String[ref, args___], opts___] /; ClassMethodQ[method, self] := self[Unevaluated[method[ref, args]], opts];
+        ref[method_String[args : PatternSequence[arg_, ___] | ___], opts___] /; ClassMethodQ[method, self] && Unevaluated[arg] =!= ref && Unevaluated[arg] =!= self :=
+            ref[Unevaluated[method[ref, args]], opts];
 
     ];
 
@@ -311,9 +311,9 @@ ClassMethodQ[method_, self_] := ListQ[self["$ClassMethods"]] && MemberQ[self["$C
 StaticMethodQ[method_, self_] := ListQ[self["$StaticMethods"]] && MemberQ[self["$StaticMethods"], method]
 
 SetAttributes[{PropertyMethod, StaticMethod, ClassMethod}, HoldFirst]
-PropertyMethod[set : _[class_[method_[___]], _]] := (class["$Properties"] //= Append[method]; set)
-StaticMethod[set : _[class_[method_[___]], _]] := (class["$StaticMethods"] //= Append[method]; set)
-ClassMethod[set : _[class_[method_[___]], _]] := (class["$ClassMethods"] //= Append[method]; set)
+PropertyMethod[set : _[class_[method_[___], ___], _]] := (class["$Properties"] //= Append[method]; set)
+StaticMethod[set : _[class_[method_[___], ___], _]] := (class["$StaticMethods"] //= Append[method]; set)
+ClassMethod[set : _[class_[method_[___], ___], _]] := (class["$ClassMethods"] //= Append[method]; set)
 
 
 (* ::Section::Closed:: *)
