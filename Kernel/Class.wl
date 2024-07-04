@@ -86,10 +86,8 @@ MissingUnion[list_List] := Union @@ Replace[list, _Missing -> {}, {1}]
 InheritDefinitions[a_ ? Developer`SymbolQ, b_ ? Developer`SymbolQ] := (
 
 	(* Track children and parents *)
-	If[	$UpValueHack,
-		$Children[a] = Union[$Children[a], Hold[b]];
-		$Parent[b] = Hold[a]
-	];
+	$Children[a] = Union[$Children[a], Hold[b]];
+	$Parent[b] = Hold[a];
 
 	(* Inherit DownValues and SubValues *)
 	b[args___] := DelayedBlock[a, b, a[args]];
@@ -198,9 +196,9 @@ With[{
         _ :> ToString[Unevaluated[src]]
     }];
 
-    ref["$AllProperties"] := MissingUnion[{ref["$Properties"], self["$AllProperties"]}];
-    ref["$AllClassMethods"] := MissingUnion[{ref["$ClassMethods"], self["$AllClassMethods"]}];
-	ref["$AllStaticMethods"] := MissingUnion[{ref["$StaticMethods"], self["$AllStaticMethods"]}];
+    ref["$AllProperties"] := MissingUnion[{ref["$Properties"], If[self === Class, {}, self["$AllProperties"]]}];
+    ref["$AllClassMethods"] := MissingUnion[{ref["$ClassMethods"], If[self === Class, {}, self["$AllClassMethods"]]}];
+	ref["$AllStaticMethods"] := MissingUnion[{ref["$StaticMethods"], If[self === Class, {}, self["$AllStaticMethods"]]}];
 
     If[ cmd === "$New",
 
@@ -251,6 +249,9 @@ With[{
         MakeBoxes[ref, form___] ^:= self["$Class"]["$Format"[ref, form]]
     ];
 
+	(* Destructor *)
+	Remove[ref] ^:= (ref["$Destroy"[]]; Quiet[Scan[Remove, AllChildren[ref]]; Block[{ref}, Remove[ref]]; Remove[ref], Remove::remal]);
+
     ref
 ]]
 
@@ -263,7 +264,7 @@ Class["$Init"[self_, class_, initValues___]] := Block[{
     self["$Type"] = _Symbol ? (self["$Test"]);
     self["$Icon"] = None;
 	self["$Properties"] = {};
-	self["$ClassMethods"] = {};
+    self["$ClassMethods"] = {};
 	self["$StaticMethods"] = {};
 
     self[(cmd : "$New" | "$Extend") | (cmd : "$New" | "$Extend")[initArgs___], src_ : Automatic] :=
@@ -301,7 +302,7 @@ Class["$Init"[self_, class_, initValues___]] := Block[{
 ]
 
 
-Class["$Init"[Class, Class, "$Icon"]];
+Class["$Init"[Class, Class, "$Parent" -> Class]];
 
 Class[class_, values___] := (Class[Unevaluated["$New"[class, values]], Unevaluated[class]])
 
