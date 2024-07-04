@@ -81,6 +81,8 @@ RootParent[x_] := RootParent[x] = With[{parent = $Parent[x]}, If[parent === None
 ParentTest[x_][y_] := With[{parent = $Parent[y]}, parent =!= None && (parent === Hold[x] || Function[Null, ParentTest[x][Unevaluated[#]], HoldAll] @@ parent)]
 ParentType[x_] := _ ? (ParentTest[x])
 
+MissingUnion[list_List] := Union @@ Replace[list, _Missing -> {}, {1}]
+
 InheritDefinitions[a_ ? Developer`SymbolQ, b_ ? Developer`SymbolQ] := (
 
 	(* Track children and parents *)
@@ -196,9 +198,9 @@ With[{
         _ :> ToString[Unevaluated[src]]
     }];
 
-    ref["$Properties"] := self["$Properties"];
-    ref["$ClassMethods"] := self["$ClassMethods"];
-	ref["$StaticMethods"] := self["$StaticMethods"];
+    ref["$AllProperties"] := MissingUnion[{ref["$Properties"], self["$AllProperties"]}];
+    ref["$AllClassMethods"] := MissingUnion[{ref["$ClassMethods"], self["$AllClassMethods"]}];
+	ref["$AllStaticMethods"] := MissingUnion[{ref["$StaticMethods"], self["$AllStaticMethods"]}];
 
     If[ cmd === "$New",
 
@@ -211,7 +213,7 @@ With[{
         ];
 
         (* properties *)
-	    ref[prop_String, opts___] /; ListQ[self["$Properties"]] && MemberQ[self["$Properties"], prop] := self[prop[ref], opts];
+	    ref[prop_String, opts___] /; PropertyQ[prop, ref] := self[prop[ref], opts];
 
         If[ self =!= Class,
 			ref[def : _String | _String[___]] := self[def]
@@ -260,6 +262,9 @@ Class["$Init"[self_, class_, initValues___]] := Block[{
     self["$Test"] = ClassTest[self];
     self["$Type"] = _Symbol ? (self["$Test"]);
     self["$Icon"] = None;
+	self["$Properties"] = {};
+	self["$ClassMethods"] = {};
+	self["$StaticMethods"] = {};
 
     self[(cmd : "$New" | "$Extend") | (cmd : "$New" | "$Extend")[initArgs___], src_ : Automatic] :=
         NewInstance[cmd, self, Unevaluated[src], initArgs];
@@ -296,7 +301,7 @@ Class["$Init"[self_, class_, initValues___]] := Block[{
 ]
 
 
-Class["$Init"[Class, Class, "$Icon", "$Parent" -> Class, "$Properties" -> {}, "$ClassMethods" -> {}, "$StaticMethods" -> {}]];
+Class["$Init"[Class, Class, "$Icon"]];
 
 Class[class_, values___] := (Class[Unevaluated["$New"[class, values]], Unevaluated[class]])
 
@@ -307,8 +312,9 @@ Class[class_ -> parent_ ? Developer`SymbolQ, values___] :=
 ClassTest[self_][x_] := With[{super = x["$Parent"]}, super =!= Unevaluated[x["$Parent"]] && (MatchQ[super, self] || super =!= Class && ClassTest[self][super])]
 ClassQ[x_] := Unevaluated[x] === Class || Developer`SymbolQ[Unevaluated[x]] && ClassQ[x["$Parent"]]
 ClassQ[___] := False
-ClassMethodQ[method_, self_] := ListQ[self["$ClassMethods"]] && MemberQ[self["$ClassMethods"], method]
-StaticMethodQ[method_, self_] := ListQ[self["$StaticMethods"]] && MemberQ[self["$StaticMethods"], method]
+PropertyQ[prop_, self_] := ListQ[self["$AllProperties"]] && MemberQ[self["$AllProperties"], prop]
+ClassMethodQ[method_, self_] := ListQ[self["$AllClassMethods"]] && MemberQ[self["$AllClassMethods"], method]
+StaticMethodQ[method_, self_] := ListQ[self["$AllStaticMethods"]] && MemberQ[self["$AllStaticMethods"], method]
 
 SetAttributes[{PropertyMethod, StaticMethod, ClassMethod}, HoldFirst]
 PropertyMethod[set : _[class_[method_[___], ___], _]] := (class["$Properties"] //= Append[method]; set)
